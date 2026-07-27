@@ -1,12 +1,19 @@
 {
-  "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "cf-r2-webdav",
-  "main": "src/index.ts",
-  "compatibility_date": "2026-07-28",
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "cf-r2-webdav",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-07-27",
 	"r2_buckets": [
 		{
 			"binding": "BUCKET",
 			"bucket_name": "cf-r2-webdav"
 		}
+	],
+	"observability": {
+		"enabled": true
+	},
+	"upload_source_maps": true,
+	"compatibility_flags": [
+		"nodejs_compat"
 	]
 }
