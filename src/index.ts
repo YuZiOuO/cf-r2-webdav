@@ -6,6 +6,7 @@ import { XMLParser } from "fast-xml-parser";
 
 const ALLOW =
   "OPTIONS, PROPFIND, PROPPATCH, GET, HEAD, PUT, DELETE, MKCOL, COPY, MOVE, LOCK, UNLOCK";
+const MILLISECONDS_PER_SECOND = 1000;
 const xmlBuilder = new XMLBuilder({ ignoreAttributes: false });
 
 type Property = { name: string; value: string };
@@ -36,7 +37,7 @@ export class WebDavMetadata extends DurableObject {
   async lock(
     key: string,
     scope: Lock["scope"],
-    timeout: string,
+    timeout: { header: string; seconds: number | undefined },
     token?: string,
   ) {
     const locks = ((await this.ctx.storage.get<Lock[]>("locks")) ?? []).filter(
@@ -47,11 +48,12 @@ export class WebDavMetadata extends DurableObject {
         (value) => value.key === key && value.token === token,
       );
       if (!lock) return null;
-      lock.timeout = timeout;
-      lock.expires =
-        timeout === "Infinite"
-          ? undefined
-          : Date.now() + Number(timeout.slice(7)) * 1000;
+      lock.timeout = timeout.header;
+      if (timeout.seconds === undefined) {
+        lock.expires = undefined;
+      } else {
+        lock.expires = Date.now() + timeout.seconds * MILLISECONDS_PER_SECOND;
+      }
       await this.ctx.storage.put("locks", locks);
       return lock;
     }
@@ -63,16 +65,16 @@ export class WebDavMetadata extends DurableObject {
       )
     )
       return null;
-    const lock = {
+    const lock: Lock = {
       key,
       token: `opaquelocktoken:${crypto.randomUUID()}`,
       scope,
-      timeout,
-      expires:
-        timeout === "Infinite"
-          ? undefined
-          : Date.now() + Number(timeout.slice(7)) * 1000,
+      timeout: timeout.header,
+      expires: undefined,
     };
+    if (timeout.seconds !== undefined) {
+      lock.expires = Date.now() + timeout.seconds * MILLISECONDS_PER_SECOND;
+    }
     locks.push(lock);
     await this.ctx.storage.put("locks", locks);
     return lock;
@@ -173,8 +175,10 @@ app.options("*", (c) => c.body(null, 204, { Allow: ALLOW, DAV: "1, 2" }));
 app.on("PROPFIND", "*", async (c) => {
   const key = c.get("key");
   let target = await findR2ObjectOrDirectory(c.env.BUCKET, key);
-  if (!target && (await c.env.METADATA.getByName("webdav").hasLock(key)))
-    target = { key, directory: false };
+  if (!target) {
+    if (await c.env.METADATA.getByName("webdav").hasLock(key))
+      target = { key, directory: false };
+  }
   if (!target) return c.text("Resource not found", 404);
 
   const depth = c.req.header("depth") ?? "1";
@@ -214,9 +218,10 @@ app.on("PROPFIND", "*", async (c) => {
     : undefined;
   const propfind = requestBody?.["D:propfind"] ?? requestBody?.propfind;
   const requested = Object.keys(propfind?.["D:prop"] ?? propfind?.prop ?? {});
-  const propname = Boolean(
-    propfind && ("D:propname" in propfind || "propname" in propfind),
-  );
+  const propname =
+    propfind !== undefined &&
+    (Object.hasOwn(propfind, "D:propname") ||
+      Object.hasOwn(propfind, "propname"));
   const responses = await Promise.all(
     resources.map(async (item) => {
       const object = item.object;
@@ -224,60 +229,48 @@ app.on("PROPFIND", "*", async (c) => {
       const href = item.key
         ? `/${item.key.split("/").map(encodeURIComponent).join("/")}${item.directory ? "/" : ""}`
         : "/";
-      const live = {
+      const live: Record<string, unknown> = {
         "D:displayname": name,
-        ...(object
-          ? {
-              "D:getlastmodified": object.uploaded.toUTCString(),
-              "D:getetag": object.httpEtag,
-            }
-          : {}),
         "D:resourcetype": item.directory ? { "D:collection": "" } : "",
-        ...(object && !item.directory
-          ? {
-              "D:getcontentlength": object.size,
-              "D:getcontenttype":
-                object.httpMetadata?.contentType ?? "application/octet-stream",
-            }
-          : {}),
         "D:supportedlock": {
           "D:lockentry": {
             "D:lockscope": { "D:exclusive": "" },
             "D:locktype": { "D:write": "" },
           },
         },
-        ...((await c.env.METADATA.getByName("webdav").hasLock(item.key))
-          ? { "D:lockdiscovery": "" }
-          : {}),
       };
+      if (object) {
+        live["D:getlastmodified"] = object.uploaded.toUTCString();
+        live["D:getetag"] = object.httpEtag;
+      }
+      if (object && !item.directory) {
+        live["D:getcontentlength"] = object.size;
+        live["D:getcontenttype"] =
+          object.httpMetadata?.contentType ?? "application/octet-stream";
+      }
+      if (await c.env.METADATA.getByName("webdav").hasLock(item.key)) {
+        live["D:lockdiscovery"] = "";
+      }
       const dead = await c.env.METADATA.getByName("webdav").properties(
         item.key,
       );
       const properties = Object.fromEntries(
         dead.map((property) => [property.name, property.value]),
       );
-      const names = propname
-        ? [...Object.keys(live), ...dead.map((property) => property.name)]
-        : requested.length
-          ? requested
-          : [...Object.keys(live), ...dead.map((property) => property.name)];
+      const available = { ...properties, ...live };
+      let names = Object.keys(available);
+      if (requested.length && !propname) names = requested;
       const found = Object.fromEntries(
         names
-          .filter((property) => property in live || property in properties)
-          .map((property) => [
-            property,
-            propname
-              ? ""
-              : property in live
-                ? live[property as keyof typeof live]
-                : properties[property],
-          ]),
+          .filter((property) => Object.hasOwn(available, property))
+          .map((property) => {
+            if (propname) return [property, ""];
+            return [property, available[property]];
+          }),
       );
       const missing = Object.fromEntries(
         names
-          .filter(
-            (property) => !(property in live) && !(property in properties),
-          )
+          .filter((property) => !Object.hasOwn(available, property))
           .map((property) => [property, ""]),
       );
       return {
@@ -340,24 +333,18 @@ app.get("*", async (c) => {
 app.put("*", async (c) => {
   const key = c.get("key");
   if (!key) return c.text("Collection", 405, { Allow: ALLOW });
-  if (
-    (
-      await findR2ObjectOrDirectory(
-        c.env.BUCKET,
-        key.substring(0, key.lastIndexOf("/")),
-      )
-    )?.directory !== true
-  ) {
+  const parent = await findR2ObjectOrDirectory(
+    c.env.BUCKET,
+    key.substring(0, key.lastIndexOf("/")),
+  );
+  if (parent?.directory !== true) {
     return c.text("Parent collection not found", 409);
   }
   const existing = await findR2ObjectOrDirectory(c.env.BUCKET, key);
   if (existing?.directory)
     return c.text("Collection exists", 405, { Allow: ALLOW });
-  if (
-    c.req.header("if-match") &&
-    c.req.header("if-match") !== "*" &&
-    c.req.header("if-match") !== existing?.object?.httpEtag
-  )
+  const ifMatch = c.req.header("if-match");
+  if (ifMatch && ifMatch !== "*" && ifMatch !== existing?.object?.httpEtag)
     return c.body(null, 412);
   if (c.req.header("if-none-match") === "*" && existing)
     return c.body(null, 412);
@@ -377,20 +364,20 @@ app.put("*", async (c) => {
 
 app.on("MKCOL", "*", async (c) => {
   const key = c.get("key");
-  if (!key || (await findR2ObjectOrDirectory(c.env.BUCKET, key)))
+  if (!key) return c.text("Collection exists", 405, { Allow: ALLOW });
+  if (await findR2ObjectOrDirectory(c.env.BUCKET, key))
     return c.text("Collection exists", 405, { Allow: ALLOW });
-  if (
-    (
-      await findR2ObjectOrDirectory(
-        c.env.BUCKET,
-        key.substring(0, key.lastIndexOf("/")),
-      )
-    )?.directory !== true
-  ) {
+  const parent = await findR2ObjectOrDirectory(
+    c.env.BUCKET,
+    key.substring(0, key.lastIndexOf("/")),
+  );
+  if (parent?.directory !== true) {
     return c.text("Parent collection not found", 409);
   }
-  if (c.req.raw.body && (await c.req.raw.arrayBuffer()).byteLength)
-    return c.text("MKCOL body is not supported", 415);
+  if (c.req.raw.body) {
+    if ((await c.req.raw.arrayBuffer()).byteLength)
+      return c.text("MKCOL body is not supported", 415);
+  }
   await c.env.BUCKET.put(`${key}/`, "");
   return c.body(null, 201, { Location: c.req.url });
 });
@@ -480,18 +467,23 @@ app.on("PROPPATCH", "*", async (c) => {
 app.on("LOCK", "*", async (c) => {
   const key = c.get("key");
   const target = await findR2ObjectOrDirectory(c.env.BUCKET, key);
-  const timeout = c.req.header("timeout")?.split(",")[0].trim() ?? "Infinite";
-  if (timeout !== "Infinite" && !/^Second-\d+$/.test(timeout))
-    return c.text("Invalid Timeout header", 400);
+  const timeoutHeader =
+    c.req.header("timeout")?.split(",")[0].trim() ?? "Infinite";
+  let seconds: number | undefined;
+  if (timeoutHeader !== "Infinite") {
+    const match = /^Second-\d+$/.exec(timeoutHeader);
+    if (!match) return c.text("Invalid Timeout header", 400);
+    seconds = Number(match[1]);
+  }
+  const timeout = { header: timeoutHeader, seconds };
   const body = c.req.raw.body ? await c.req.text() : "";
   const token = c.req.header("if")?.match(/<([^>]+)>/)?.[1];
   const lockinfo = body && new XMLParser().parse(body);
-  const scope =
-    lockinfo &&
-    (lockinfo["D:lockinfo"]?.["D:lockscope"]?.["D:shared"] ??
-      lockinfo.lockinfo?.lockscope?.shared) !== undefined
-      ? "shared"
-      : "exclusive";
+  const lockscope =
+    lockinfo?.["D:lockinfo"]?.["D:lockscope"] ?? lockinfo?.lockinfo?.lockscope;
+  let scope: Lock["scope"] = "exclusive";
+  if (lockscope?.["D:shared"] !== undefined || lockscope?.shared !== undefined)
+    scope = "shared";
   const lock = await c.env.METADATA.getByName("webdav").lock(
     key,
     scope,
@@ -526,10 +518,8 @@ app.on("LOCK", "*", async (c) => {
 
 app.on("UNLOCK", "*", async (c) => {
   const token = c.req.header("lock-token")?.match(/^<([^>]+)>$/)?.[1];
-  if (
-    !token ||
-    !(await c.env.METADATA.getByName("webdav").unlock(c.get("key"), token))
-  )
+  if (!token) return c.text("Lock token does not match", 409);
+  if (!(await c.env.METADATA.getByName("webdav").unlock(c.get("key"), token)))
     return c.text("Lock token does not match", 409);
   return c.body(null, 204);
 });
@@ -540,12 +530,17 @@ app.on(["COPY", "MOVE"], "*", async (c) => {
   if (!sourceKey || !destination)
     return c.text("Invalid Destination header", 400);
 
+  const requestUrl = new URL(c.req.url);
+  let destinationUrl: URL;
   let destinationKey: string;
   try {
-    const url = new URL(destination, c.req.url);
-    if (url.origin !== new URL(c.req.url).origin)
+    destinationUrl = new URL(destination, requestUrl);
+    if (destinationUrl.origin !== requestUrl.origin)
       return c.text("Cross-origin destinations are not supported", 502);
-    destinationKey = decodeURIComponent(url.pathname).replace(/^\/+|\/+$/g, "");
+    destinationKey = decodeURIComponent(destinationUrl.pathname).replace(
+      /^\/+|\/+$/g,
+      "",
+    );
   } catch {
     return c.text("Invalid Destination header", 400);
   }
@@ -553,29 +548,20 @@ app.on(["COPY", "MOVE"], "*", async (c) => {
 
   const source = await findR2ObjectOrDirectory(c.env.BUCKET, sourceKey);
   if (!source) return c.text("Not Found", 404);
-  if (
-    sourceKey === destinationKey ||
-    (source.directory && destinationKey.startsWith(`${sourceKey}/`))
-  ) {
+  if (sourceKey === destinationKey) return c.text("Invalid destination", 403);
+  if (source.directory && destinationKey.startsWith(`${sourceKey}/`))
     return c.text("Invalid destination", 403);
-  }
-  if (
-    (
-      await findR2ObjectOrDirectory(
-        c.env.BUCKET,
-        destinationKey.substring(0, destinationKey.lastIndexOf("/")),
-      )
-    )?.directory !== true
-  ) {
+  const parent = await findR2ObjectOrDirectory(
+    c.env.BUCKET,
+    destinationKey.substring(0, destinationKey.lastIndexOf("/")),
+  );
+  if (parent?.directory !== true) {
     return c.text("Parent collection not found", 409);
   }
 
   const depth = (c.req.header("depth") ?? "infinity").toLowerCase();
-  if (
-    source.directory &&
-    ((depth !== "0" && depth !== "infinity") ||
-      (c.req.method === "MOVE" && depth !== "infinity"))
-  ) {
+  const isMove = c.req.method === "MOVE";
+  if (source.directory && depth !== "infinity" && (depth !== "0" || isMove)) {
     return c.text("Invalid Depth header", 400);
   }
 
@@ -590,29 +576,31 @@ app.on(["COPY", "MOVE"], "*", async (c) => {
     else await c.env.BUCKET.delete(destinationKey);
   }
 
-  if (source.directory && depth === "0") {
-    await c.env.BUCKET.put(`${destinationKey}/`, "");
-  } else if (source.directory) {
-    let cursor: string | undefined;
-    do {
-      const listing = await c.env.BUCKET.list({
-        prefix: `${sourceKey}/`,
-        cursor,
-      });
-      for (const object of listing.objects) {
-        await copyR2Object(
-          c.env.BUCKET,
-          object.key,
-          `${destinationKey}/${object.key.slice(sourceKey.length + 1)}`,
-        );
-      }
-      cursor = listing.truncated ? listing.cursor : undefined;
-    } while (cursor);
+  if (source.directory) {
+    if (depth === "0") {
+      await c.env.BUCKET.put(`${destinationKey}/`, "");
+    } else {
+      let cursor: string | undefined;
+      do {
+        const listing = await c.env.BUCKET.list({
+          prefix: `${sourceKey}/`,
+          cursor,
+        });
+        for (const object of listing.objects) {
+          await copyR2Object(
+            c.env.BUCKET,
+            object.key,
+            `${destinationKey}/${object.key.slice(sourceKey.length + 1)}`,
+          );
+        }
+        cursor = listing.truncated ? listing.cursor : undefined;
+      } while (cursor);
+    }
   } else {
     await copyR2Object(c.env.BUCKET, sourceKey, destinationKey);
   }
 
-  if (c.req.method === "MOVE") {
+  if (isMove) {
     if (source.directory)
       await deleteR2ObjectsWithPrefix(c.env.BUCKET, `${sourceKey}/`);
     else await c.env.BUCKET.delete(sourceKey);
@@ -620,9 +608,7 @@ app.on(["COPY", "MOVE"], "*", async (c) => {
   return c.body(
     null,
     existing ? 204 : 201,
-    existing
-      ? undefined
-      : { Location: new URL(destination, c.req.url).toString() },
+    existing ? undefined : { Location: destinationUrl.toString() },
   );
 });
 
