@@ -9,6 +9,20 @@
 			"bucket_name": "webdav"
 		}
 	],
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "METADATA",
+				"class_name": "WebDavMetadata"
+			}
+		]
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": ["WebDavMetadata"]
+		}
+	],
 	"observability": {
 		"enabled": true
 	},

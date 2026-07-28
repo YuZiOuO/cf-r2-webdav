@@ -14,8 +14,10 @@
 | `PUT` | 创建或覆盖文件 |
 | `MKCOL` | 创建 collection |
 | `DELETE` | 删除文件或 collection 及其内容 |
+| `COPY` | 复制文件或 collection |
+| `MOVE` | 移动或重命名文件、collection |
 
-不支持 `COPY`、`MOVE`、`PROPPATCH`、`LOCK`、`UNLOCK`，也不支持 `Depth: infinity`。这不是完整的 RFC 4918 实现。
+不支持 `PROPPATCH`、`LOCK`、`UNLOCK`。`COPY` 支持 `Depth: 0` 与 `Depth: infinity`，不支持 `Depth: 1`；`MOVE` 只支持完整移动。这不是完整的 RFC 4918 实现。
 
 R2 没有目录实体。`MKCOL /photos` 会写入零字节对象 `photos/`，用来保留空 collection；该对象不会出现在 WebDAV 目录列表中。
 
