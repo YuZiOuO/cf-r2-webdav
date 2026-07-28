@@ -109,7 +109,7 @@ export class WebDavMetadata extends DurableObject {
 
 async function deleteR2ObjectsWithPrefix(bucket: R2Bucket, prefix: string) {
   while (true) {
-    const listing = await bucket.list({ prefix, limit: 1000 });
+    const listing = await bucket.list({ prefix });
     if (!listing.objects.length) return;
     await bucket.delete(listing.objects.map((object) => object.key));
   }
@@ -210,7 +210,7 @@ app.on("PROPFIND", "*", async (c) => {
   }
 
   const requestBody = c.req.raw.body
-    ? new XMLParser({ ignoreAttributes: false }).parse(await c.req.text())
+    ? new XMLParser().parse(await c.req.text())
     : undefined;
   const propfind = requestBody?.["D:propfind"] ?? requestBody?.propfind;
   const requested = Object.keys(propfind?.["D:prop"] ?? propfind?.prop ?? {});
@@ -403,9 +403,7 @@ app.on("PROPPATCH", "*", async (c) => {
     !(await c.env.METADATA.getByName("webdav").permits(key, c.req.header("if")))
   )
     return c.text("Locked", 423);
-  const body = new XMLParser({ ignoreAttributes: false }).parse(
-    await c.req.text(),
-  );
+  const body = new XMLParser().parse(await c.req.text());
   const update = body["D:propertyupdate"] ?? body.propertyupdate;
   const set = update?.["D:set"]?.["D:prop"] ?? update?.set?.prop ?? {};
   const remove = update?.["D:remove"]?.["D:prop"] ?? update?.remove?.prop ?? {};
@@ -487,8 +485,7 @@ app.on("LOCK", "*", async (c) => {
     return c.text("Invalid Timeout header", 400);
   const body = c.req.raw.body ? await c.req.text() : "";
   const token = c.req.header("if")?.match(/<([^>]+)>/)?.[1];
-  const lockinfo =
-    body && new XMLParser({ ignoreAttributes: false }).parse(body);
+  const lockinfo = body && new XMLParser().parse(body);
   const scope =
     lockinfo &&
     (lockinfo["D:lockinfo"]?.["D:lockscope"]?.["D:shared"] ??

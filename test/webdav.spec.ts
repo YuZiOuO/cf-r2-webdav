@@ -16,10 +16,7 @@ function request(path: string, init: RequestInit = {}) {
 async function xml(response: Response) {
   const body = await response.text();
   expect(XMLValidator.validate(body)).toBe(true);
-  const document = new XMLParser({
-    ignoreAttributes: false,
-    removeNSPrefix: true,
-  }).parse(body);
+  const document = new XMLParser({ removeNSPrefix: true }).parse(body);
   return { body, document };
 }
 
