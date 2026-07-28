@@ -298,6 +298,88 @@ app.on("PROPFIND", "*", async (c) => {
   );
 });
 
+app.on("PROPPATCH", "*", async (c) => {
+  const key = c.get("key");
+  if (!(await findR2ObjectOrDirectory(c.env.BUCKET, key)))
+    return c.text("Not Found", 404);
+  if (
+    !(await c.env.METADATA.getByName("webdav").permits(key, c.req.header("if")))
+  )
+    return c.text("Locked", 423);
+  const body = new XMLParser().parse(await c.req.text());
+  const update = body["D:propertyupdate"] ?? body.propertyupdate;
+  const set = update?.["D:set"]?.["D:prop"] ?? update?.set?.prop ?? {};
+  const remove = update?.["D:remove"]?.["D:prop"] ?? update?.remove?.prop ?? {};
+  const protectedProperties = Object.keys(set).filter(
+    (property) =>
+      property.startsWith("D:") &&
+      [
+        "D:getetag",
+        "D:getcontentlength",
+        "D:getlastmodified",
+        "D:resourcetype",
+      ].includes(property),
+  );
+  if (protectedProperties.length) {
+    return c.body(
+      xmlBuilder.build({
+        "?xml": { "@_version": "1.0", "@_encoding": "utf-8" },
+        "D:multistatus": {
+          "@_xmlns:D": "DAV:",
+          "D:response": {
+            "D:href": c.req.path,
+            "D:propstat": [
+              {
+                "D:prop": Object.fromEntries(
+                  protectedProperties.map((property) => [property, ""]),
+                ),
+                "D:status": "HTTP/1.1 403 Forbidden",
+              },
+              {
+                "D:prop": Object.fromEntries(
+                  Object.keys(set)
+                    .filter(
+                      (property) => !protectedProperties.includes(property),
+                    )
+                    .map((property) => [property, ""]),
+                ),
+                "D:status": "HTTP/1.1 424 Failed Dependency",
+              },
+            ],
+          },
+        },
+      }),
+      207,
+      { "Content-Type": "application/xml; charset=utf-8" },
+    );
+  }
+  await c.env.METADATA.getByName("webdav").patch(
+    key,
+    Object.entries(set).map(([name, value]) => ({
+      name,
+      value: String(value),
+    })),
+    Object.keys(remove),
+  );
+  return c.body(
+    xmlBuilder.build({
+      "?xml": { "@_version": "1.0", "@_encoding": "utf-8" },
+      "D:multistatus": {
+        "@_xmlns:D": "DAV:",
+        "D:response": {
+          "D:href": c.req.path,
+          "D:propstat": {
+            "D:prop": { ...set, ...remove },
+            "D:status": "HTTP/1.1 200 OK",
+          },
+        },
+      },
+    }),
+    207,
+    { "Content-Type": "application/xml; charset=utf-8" },
+  );
+});
+
 app.get("*", async (c) => {
   const key = c.get("key");
   if (!key) return c.text("Collection", 405, { Allow: ALLOW });
@@ -382,145 +464,16 @@ app.on("MKCOL", "*", async (c) => {
   return c.body(null, 201, { Location: c.req.url });
 });
 
-app.on("PROPPATCH", "*", async (c) => {
+app.delete("*", async (c) => {
   const key = c.get("key");
-  if (!(await findR2ObjectOrDirectory(c.env.BUCKET, key)))
-    return c.text("Not Found", 404);
-  if (
-    !(await c.env.METADATA.getByName("webdav").permits(key, c.req.header("if")))
-  )
-    return c.text("Locked", 423);
-  const body = new XMLParser().parse(await c.req.text());
-  const update = body["D:propertyupdate"] ?? body.propertyupdate;
-  const set = update?.["D:set"]?.["D:prop"] ?? update?.set?.prop ?? {};
-  const remove = update?.["D:remove"]?.["D:prop"] ?? update?.remove?.prop ?? {};
-  const protectedProperties = Object.keys(set).filter(
-    (property) =>
-      property.startsWith("D:") &&
-      [
-        "D:getetag",
-        "D:getcontentlength",
-        "D:getlastmodified",
-        "D:resourcetype",
-      ].includes(property),
-  );
-  if (protectedProperties.length) {
-    return c.body(
-      xmlBuilder.build({
-        "?xml": { "@_version": "1.0", "@_encoding": "utf-8" },
-        "D:multistatus": {
-          "@_xmlns:D": "DAV:",
-          "D:response": {
-            "D:href": c.req.path,
-            "D:propstat": [
-              {
-                "D:prop": Object.fromEntries(
-                  protectedProperties.map((property) => [property, ""]),
-                ),
-                "D:status": "HTTP/1.1 403 Forbidden",
-              },
-              {
-                "D:prop": Object.fromEntries(
-                  Object.keys(set)
-                    .filter(
-                      (property) => !protectedProperties.includes(property),
-                    )
-                    .map((property) => [property, ""]),
-                ),
-                "D:status": "HTTP/1.1 424 Failed Dependency",
-              },
-            ],
-          },
-        },
-      }),
-      207,
-      { "Content-Type": "application/xml; charset=utf-8" },
-    );
-  }
-  await c.env.METADATA.getByName("webdav").patch(
-    key,
-    Object.entries(set).map(([name, value]) => ({
-      name,
-      value: String(value),
-    })),
-    Object.keys(remove),
-  );
-  return c.body(
-    xmlBuilder.build({
-      "?xml": { "@_version": "1.0", "@_encoding": "utf-8" },
-      "D:multistatus": {
-        "@_xmlns:D": "DAV:",
-        "D:response": {
-          "D:href": c.req.path,
-          "D:propstat": {
-            "D:prop": { ...set, ...remove },
-            "D:status": "HTTP/1.1 200 OK",
-          },
-        },
-      },
-    }),
-    207,
-    { "Content-Type": "application/xml; charset=utf-8" },
-  );
-});
-
-app.on("LOCK", "*", async (c) => {
-  const key = c.get("key");
+  if (!key) return c.text("Cannot delete root collection", 403);
   const target = await findR2ObjectOrDirectory(c.env.BUCKET, key);
-  const timeoutHeader =
-    c.req.header("timeout")?.split(",")[0].trim() ?? "Infinite";
-  let seconds: number | undefined;
-  if (timeoutHeader !== "Infinite") {
-    const match = /^Second-\d+$/.exec(timeoutHeader);
-    if (!match) return c.text("Invalid Timeout header", 400);
-    seconds = Number(match[1]);
+  if (!target) return c.text("Not Found", 404);
+  if (target.directory) {
+    await deleteR2ObjectsWithPrefix(c.env.BUCKET, `${key}/`);
+  } else {
+    await c.env.BUCKET.delete(key);
   }
-  const timeout = { header: timeoutHeader, seconds };
-  const body = c.req.raw.body ? await c.req.text() : "";
-  const token = c.req.header("if")?.match(/<([^>]+)>/)?.[1];
-  const lockinfo = body && new XMLParser().parse(body);
-  const lockscope =
-    lockinfo?.["D:lockinfo"]?.["D:lockscope"] ?? lockinfo?.lockinfo?.lockscope;
-  let scope: Lock["scope"] = "exclusive";
-  if (lockscope?.["D:shared"] !== undefined || lockscope?.shared !== undefined)
-    scope = "shared";
-  const lock = await c.env.METADATA.getByName("webdav").lock(
-    key,
-    scope,
-    timeout,
-    token,
-  );
-  if (!lock) return c.text("Locked", 423);
-  return c.body(
-    xmlBuilder.build({
-      "?xml": { "@_version": "1.0", "@_encoding": "utf-8" },
-      "D:prop": {
-        "@_xmlns:D": "DAV:",
-        "D:lockdiscovery": {
-          "D:activelock": {
-            "D:lockscope": { [`D:${lock.scope}`]: "" },
-            "D:locktype": { "D:write": "" },
-            "D:depth": "0",
-            "D:timeout": lock.timeout,
-            "D:locktoken": { "D:href": lock.token },
-          },
-        },
-      },
-    }),
-    target ? 200 : 201,
-    {
-      "Content-Type": "application/xml; charset=utf-8",
-      "Lock-Token": `<${lock.token}>`,
-      Timeout: lock.timeout,
-    },
-  );
-});
-
-app.on("UNLOCK", "*", async (c) => {
-  const token = c.req.header("lock-token")?.match(/^<([^>]+)>$/)?.[1];
-  if (!token) return c.text("Lock token does not match", 409);
-  if (!(await c.env.METADATA.getByName("webdav").unlock(c.get("key"), token)))
-    return c.text("Lock token does not match", 409);
   return c.body(null, 204);
 });
 
@@ -612,16 +565,63 @@ app.on(["COPY", "MOVE"], "*", async (c) => {
   );
 });
 
-app.delete("*", async (c) => {
+app.on("LOCK", "*", async (c) => {
   const key = c.get("key");
-  if (!key) return c.text("Cannot delete root collection", 403);
   const target = await findR2ObjectOrDirectory(c.env.BUCKET, key);
-  if (!target) return c.text("Not Found", 404);
-  if (target.directory) {
-    await deleteR2ObjectsWithPrefix(c.env.BUCKET, `${key}/`);
-  } else {
-    await c.env.BUCKET.delete(key);
+  const timeoutHeader =
+    c.req.header("timeout")?.split(",")[0].trim() ?? "Infinite";
+  let seconds: number | undefined;
+  if (timeoutHeader !== "Infinite") {
+    const match = /^Second-\d+$/.exec(timeoutHeader);
+    if (!match) return c.text("Invalid Timeout header", 400);
+    seconds = Number(match[1]);
   }
+  const timeout = { header: timeoutHeader, seconds };
+  const body = c.req.raw.body ? await c.req.text() : "";
+  const token = c.req.header("if")?.match(/<([^>]+)>/)?.[1];
+  const lockinfo = body && new XMLParser().parse(body);
+  const lockscope =
+    lockinfo?.["D:lockinfo"]?.["D:lockscope"] ?? lockinfo?.lockinfo?.lockscope;
+  let scope: Lock["scope"] = "exclusive";
+  if (lockscope?.["D:shared"] !== undefined || lockscope?.shared !== undefined)
+    scope = "shared";
+  const lock = await c.env.METADATA.getByName("webdav").lock(
+    key,
+    scope,
+    timeout,
+    token,
+  );
+  if (!lock) return c.text("Locked", 423);
+  return c.body(
+    xmlBuilder.build({
+      "?xml": { "@_version": "1.0", "@_encoding": "utf-8" },
+      "D:prop": {
+        "@_xmlns:D": "DAV:",
+        "D:lockdiscovery": {
+          "D:activelock": {
+            "D:lockscope": { [`D:${lock.scope}`]: "" },
+            "D:locktype": { "D:write": "" },
+            "D:depth": "0",
+            "D:timeout": lock.timeout,
+            "D:locktoken": { "D:href": lock.token },
+          },
+        },
+      },
+    }),
+    target ? 200 : 201,
+    {
+      "Content-Type": "application/xml; charset=utf-8",
+      "Lock-Token": `<${lock.token}>`,
+      Timeout: lock.timeout,
+    },
+  );
+});
+
+app.on("UNLOCK", "*", async (c) => {
+  const token = c.req.header("lock-token")?.match(/^<([^>]+)>$/)?.[1];
+  if (!token) return c.text("Lock token does not match", 409);
+  if (!(await c.env.METADATA.getByName("webdav").unlock(c.get("key"), token)))
+    return c.text("Lock token does not match", 409);
   return c.body(null, 204);
 });
 
