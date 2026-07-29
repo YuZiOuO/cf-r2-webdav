@@ -111,7 +111,7 @@ app.on("PROPFIND", "*", async (c) => {
 
   const resources: Entry[] = [target];
   if (target.kind === "directory" && depth === "1")
-    resources.push(...(await filesystem.list(key)));
+    resources.push(...(await filesystem.list(target)));
 
   const metadata = await filesystem.webdav.inspect(
     resources.map((resource) => resource.key),

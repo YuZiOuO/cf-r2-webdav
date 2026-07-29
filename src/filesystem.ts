@@ -134,11 +134,18 @@ export class FileSystem {
     return this.bucket.get(key, options);
   }
 
-  async list(rawKey: string): Promise<Entry[]> {
-    const key = KeyPath.normalize(rawKey);
-    const target = await this.findEntry(key);
-    if (!target) throw new FileSystemError("not-found", "Directory not found");
-    if (target.kind !== "directory")
+  async list(rawKeyOrTarget: string | Entry): Promise<Entry[]> {
+    const key =
+      typeof rawKeyOrTarget === "string"
+        ? KeyPath.normalize(rawKeyOrTarget)
+        : rawKeyOrTarget.key;
+    const directory =
+      typeof rawKeyOrTarget === "string"
+        ? await this.findEntry(key)
+        : rawKeyOrTarget;
+    if (!directory)
+      throw new FileSystemError("not-found", "Directory not found");
+    if (directory.kind !== "directory")
       throw new FileSystemError("not-directory", "Resource is not a directory");
 
     const entries = new Map<string, Entry>();
