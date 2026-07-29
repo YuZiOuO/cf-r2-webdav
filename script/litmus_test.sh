@@ -51,10 +51,10 @@ run_litmus() {
   local failure_count
 
   set +e
-  litmus -k "$base_url/" "$litmus_username" "$litmus_password" >"$output_file" 2>&1
-  status=$?
+  litmus -k "$base_url/" "$litmus_username" "$litmus_password" 2>&1 |
+    tee "$output_file"
+  status="${PIPESTATUS[0]}"
   set -e
-  cat "$output_file"
 
   failure_count="$(grep -Ec 'FAIL \(|OOPS unexpected test result' "$output_file" || true)"
   if [[ "$failure_count" -eq 0 ]]; then
