@@ -1,36 +1,58 @@
-# cf-r2-webdav
+# cf-webdav
 
-运行在 Cloudflare Workers 上的简洁完整的 WebDAV 实现。
+[简体中文](README.zh_CN.md)
 
-文件系统控制面基于 Cloudflare Durable Object。
+`cf-webdav` is a WebDAV implementation for Cloudflare Workers built around
+filesystem semantics.
 
-## 一致性假设
+File contents are stored in Cloudflare R2, while coordination and metadata are
+managed by Cloudflare Durable Objects.
 
-外部可观察不变量：在当前实现中，常规 WebDAV 文件系统操作应等价于普通磁盘文件系统的一次合法并发执行，不暴露部分写入、损坏的命名空间或违反资源级读后写一致性的中间状态。目录枚举不承诺跨并发修改的全局快照。
+## Standards and Compatibility
 
-## 部署
+Implements the core WebDAV Class 1 and Class 2 semantics from
+[RFC 4918](https://www.rfc-editor.org/rfc/rfc4918).
+
+Compatibility is validated with the [Apache Litmus](https://github.com/notroj/litmus)
+WebDAV compatibility test suite. Passing Litmus does not imply complete
+conformance with RFC 4918.
+
+## Deployment
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/YuZiOuO/cf-webdav)
+
+### Manual Deployment
 
 ```bash
 bun install
 
-# 交互式地登录 Cloudflare，如果你已登录，忽略这步
+# Log in to Cloudflare if needed
 bunx wrangler login
 
-# 创建 R2 bucket
-bunx wrangler r2 bucket create webdav # 注意:如果需要使用其他名称，请同时修改 wrangler.jsonc 中的绑定。
+# Create the R2 bucket. If you use a different name, update the binding in
+# wrangler.jsonc as well.
+bunx wrangler r2 bucket create webdav
 
-# 部署
-bun run deploy # 命令会输出 Worker 的 HTTPS 地址。
+# Deploy the Worker. The command prints its HTTPS URL.
+bun run deploy
 
-# 交互式地设定 WebDAV 用户名与密码
-# 执行后马上生效
+# Set the WebDAV username and password interactively
 bunx wrangler secret put WEBDAV_USERNAME
 bunx wrangler secret put WEBDAV_PASSWORD
 ```
 
-本地开发时，变量从 `.dev.vars` 中读取：
+For local development, set these variables in `.dev.vars`:
 
 ```text
 WEBDAV_USERNAME=your-username
 WEBDAV_PASSWORD=your-password
 ```
+
+## Consistency Assumptions
+
+From an external perspective, ordinary WebDAV filesystem operations should be
+equivalent to one valid concurrent execution on a conventional filesystem.
+The implementation does not expose partial writes, a corrupted namespace, or
+intermediate states that violate resource-level read-after-write consistency.
+Directory listings are not guaranteed to provide a globally consistent
+snapshot while concurrent modifications are in progress.
