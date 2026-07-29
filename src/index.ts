@@ -4,12 +4,7 @@ import { HTTPException } from "hono/http-exception";
 import XMLBuilder from "fast-xml-builder";
 import { XMLParser, XMLValidator } from "fast-xml-parser";
 import fresh from "fresh";
-import {
-  AccessContext,
-  FileSystem,
-  FileSystemError,
-  type Entry,
-} from "./fs";
+import { AccessContext, FileSystem, FileSystemError, type Entry } from "./fs";
 import { type Lock, type Property } from "./fs_state";
 import { parseProppatch, parsePropfind, toXmlPropertyMap } from "./xml";
 
@@ -350,8 +345,20 @@ app.get("*", async (c) => {
   )
     return c.body(null, 304, { ETag: metadata.httpEtag });
 
+  // HEAD only needs the metadata already returned by stat(), not the object body.
+  if (c.req.method === "HEAD") {
+    const headers = new Headers({
+      "Accept-Ranges": "bytes",
+      "Content-Length": String(metadata.size),
+      ETag: metadata.httpEtag,
+      "Last-Modified": metadata.uploaded.toUTCString(),
+    });
+    metadata.writeHttpMetadata(headers);
+    return c.body(null, { status: 200, headers });
+  }
+
   const object = await filesystem.read(
-    key,
+    target,
     range ? { range: c.req.raw.headers } : undefined,
   );
   if (!object) return c.text("Not Found", 404);
@@ -375,8 +382,6 @@ app.get("*", async (c) => {
       "Content-Range",
       `bytes ${objectRange.offset}-${objectRange.offset + objectRange.length - 1}/${object.size}`,
     );
-  if (c.req.method === "HEAD")
-    return c.body(null, { status: objectRange ? 206 : 200, headers });
   return c.body(object.body, { status: objectRange ? 206 : 200, headers });
 });
 

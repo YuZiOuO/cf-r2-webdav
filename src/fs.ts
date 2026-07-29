@@ -125,9 +125,15 @@ export class FileSystem {
     return this.findEntry(KeyPath.normalize(rawKey));
   }
 
-  async read(rawKey: string, options?: R2GetOptions) {
-    const key = KeyPath.normalize(rawKey);
-    const entry = await this.findEntry(key);
+  async read(rawKeyOrTarget: string | Entry, options?: R2GetOptions) {
+    const key =
+      typeof rawKeyOrTarget === "string"
+        ? KeyPath.normalize(rawKeyOrTarget)
+        : rawKeyOrTarget.key;
+    const entry =
+      typeof rawKeyOrTarget === "string"
+        ? await this.findEntry(key)
+        : rawKeyOrTarget;
     if (!entry) return null;
     if (entry.kind === "directory")
       throw new FileSystemError("not-directory", "Resource is a directory");
