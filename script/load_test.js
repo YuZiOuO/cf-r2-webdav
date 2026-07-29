@@ -6,11 +6,12 @@ import exec from "k6/execution";
 import encoding from "k6/encoding";
 import { Counter, Trend } from "k6/metrics";
 
-const DEFAULT_STAGE_SECONDS = 30;
-const DEFAULT_WARMUP_SECONDS = 10;
-const DEFAULT_MAX_VUS = 16;
-const DEFAULT_PROPFIND_FILES = 1000;
-const STAGE_LEVELS = [1, 2, 4, 8, 16];
+// Keep the default run short enough for routine free-plan regression checks.
+const DEFAULT_STAGE_SECONDS = 10;
+const DEFAULT_WARMUP_SECONDS = 5;
+const DEFAULT_MAX_VUS = 8;
+const DEFAULT_PROPFIND_FILES = 100;
+const STAGE_LEVELS = [1, 2, 4, 8];
 const READ_SIZE = 4 * 1024;
 const BATCH_SIZE = 50;
 
@@ -254,8 +255,9 @@ function createPropfindFixture(data) {
       batch.push({
         method: "PUT",
         url: url(data, `${data.prefix}/propfind/fixture-${index}`),
-        body: "",
-        params: params(data, "PUT", "0B", "setup"),
+        // Keep fixture uploads fixed-length for the local R2 emulator.
+        body: "x",
+        params: params(data, "PUT", "1B", "setup"),
       });
     }
     const responses = http.batch(batch);
