@@ -1,5 +1,5 @@
 import path from "node:path";
-import { type EntryState, type Lock, type Property } from "./control";
+import { type EntryState, type Lock, type Property } from "./fs_state";
 
 export type Entry = {
   key: string;

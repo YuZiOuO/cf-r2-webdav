@@ -1,5 +1,5 @@
 import { DOMParser, type Element } from "@xmldom/xmldom";
-import type { Property } from "./control";
+import type { Property } from "./fs_state";
 
 const DAV_NAMESPACE = "DAV:";
 

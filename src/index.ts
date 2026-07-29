@@ -9,11 +9,11 @@ import {
   FileSystem,
   FileSystemError,
   type Entry,
-} from "./filesystem";
-import { type Lock, type Property } from "./control";
+} from "./fs";
+import { type Lock, type Property } from "./fs_state";
 import { parseProppatch, parsePropfind, toXmlPropertyMap } from "./xml";
 
-export { FileSystemState } from "./control";
+export { FileSystemState } from "./fs_state";
 
 const ALLOW =
   "OPTIONS, PROPFIND, PROPPATCH, GET, HEAD, PUT, DELETE, MKCOL, COPY, MOVE, LOCK, UNLOCK";
