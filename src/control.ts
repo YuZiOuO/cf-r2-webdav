@@ -1,6 +1,8 @@
 import { DurableObject } from "cloudflare:workers";
 
 const MILLISECONDS_PER_SECOND = 1000;
+// Cloudflare SQLite limits each SQL statement to 100 bound parameters.
+const MAX_SQL_BIND_PARAMETERS = 100;
 
 export type Lock = {
   token: string;
@@ -126,48 +128,57 @@ export class FileSystemState extends DurableObject {
     return this.transaction(() => {
       const now = Date.now();
       this.purgeExpiredLocks(now);
-      const placeholders = keys.map(() => "?").join(", ");
       const states = new Map<string, EntryState>(
         keys.map((key) => [
           key,
           { locked: false, permitted: true, properties: [] },
         ]),
       );
-      for (const lock of this.ctx.storage.sql
-        .exec<{
-          resource_key: string;
-          token: string;
-          depth: Lock["depth"];
-        }>(
-          `SELECT resource_key, token, depth FROM locks
-           WHERE resource_key IN (${placeholders})`,
-          ...keys,
-        )
-        .toArray()) {
-        const state = states.get(lock.resource_key);
-        if (!state) continue;
-        state.locked = true;
-        if (
-          (!descendant || lock.depth === "infinity") &&
-          !tokens.includes(lock.token)
-        )
-          state.permitted = false;
-      }
-      for (const property of this.ctx.storage.sql
-        .exec<{
-          resource_key: string;
-          name: string;
-          value_xml: string;
-        }>(
-          `SELECT resource_key, name, value_xml FROM dead_properties
-           WHERE resource_key IN (${placeholders}) ORDER BY resource_key, rowid`,
-          ...keys,
-        )
-        .toArray()) {
-        states.get(property.resource_key)?.properties.push({
-          name: property.name,
-          value: property.value_xml,
-        });
+
+      // Keep all batches in one transaction while respecting SQLite's parameter limit.
+      for (
+        let offset = 0;
+        offset < keys.length;
+        offset += MAX_SQL_BIND_PARAMETERS
+      ) {
+        const batch = keys.slice(offset, offset + MAX_SQL_BIND_PARAMETERS);
+        const placeholders = batch.map(() => "?").join(", ");
+        for (const lock of this.ctx.storage.sql
+          .exec<{
+            resource_key: string;
+            token: string;
+            depth: Lock["depth"];
+          }>(
+            `SELECT resource_key, token, depth FROM locks
+             WHERE resource_key IN (${placeholders})`,
+            ...batch,
+          )
+          .toArray()) {
+          const state = states.get(lock.resource_key);
+          if (!state) continue;
+          state.locked = true;
+          if (
+            (!descendant || lock.depth === "infinity") &&
+            !tokens.includes(lock.token)
+          )
+            state.permitted = false;
+        }
+        for (const property of this.ctx.storage.sql
+          .exec<{
+            resource_key: string;
+            name: string;
+            value_xml: string;
+          }>(
+            `SELECT resource_key, name, value_xml FROM dead_properties
+             WHERE resource_key IN (${placeholders}) ORDER BY resource_key, rowid`,
+            ...batch,
+          )
+          .toArray()) {
+          states.get(property.resource_key)?.properties.push({
+            name: property.name,
+            value: property.value_xml,
+          });
+        }
       }
       return Object.fromEntries(states);
     });
