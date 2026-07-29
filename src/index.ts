@@ -214,21 +214,26 @@ app.on("PROPPATCH", "*", async (c) => {
   const requestText = await c.req.text();
   if (XMLValidator.validate(requestText) !== true)
     return c.text("Invalid XML", 400);
-  const setProperties: Property[] = [];
-  const set: Record<string, unknown> = {};
-  const remove: Record<string, unknown> = {};
+  const set = new Map<string, Property>();
+  const remove = new Set<string>();
   for (const { operation, properties } of parseProppatch(requestText)) {
-    const entries = properties;
     if (operation === "set") {
-      setProperties.push(...entries);
-      for (const entry of entries) set[entry.name] = entry.value;
+      for (const property of properties) {
+        remove.delete(property.name);
+        set.set(property.name, property);
+      }
     } else {
-      for (const entry of entries) remove[entry.name] = "";
+      for (const property of properties) {
+        set.delete(property.name);
+        remove.add(property.name);
+      }
     }
   }
-  const protectedProperties = [
-    ...new Set([...Object.keys(set), ...Object.keys(remove)]),
-  ].filter(
+  const changedProperties = Object.fromEntries([
+    ...[...set].map(([name, property]) => [name, property.value]),
+    ...[...remove].map((name) => [name, ""]),
+  ]);
+  const protectedProperties = Object.keys(changedProperties).filter(
     (property) =>
       property.startsWith("D:") &&
       [
@@ -258,7 +263,7 @@ app.on("PROPPATCH", "*", async (c) => {
               {
                 "D:prop": toXmlPropertyMap(
                   Object.fromEntries(
-                    Object.keys({ ...set, ...remove })
+                    Object.keys(changedProperties)
                       .filter(
                         (property) => !protectedProperties.includes(property),
                       )
@@ -276,8 +281,8 @@ app.on("PROPPATCH", "*", async (c) => {
     );
   }
   await filesystem.webdav.patchProperties(key, {
-    set: setProperties,
-    remove: Object.keys(remove),
+    set: [...set.values()],
+    remove: [...remove],
   });
   return c.body(
     xmlBuilder.build({
@@ -287,7 +292,7 @@ app.on("PROPPATCH", "*", async (c) => {
         "D:response": {
           "D:href": c.req.path,
           "D:propstat": {
-            "D:prop": toXmlPropertyMap({ ...set, ...remove }),
+            "D:prop": toXmlPropertyMap(changedProperties),
             "D:status": "HTTP/1.1 200 OK",
           },
         },
@@ -382,10 +387,31 @@ app.put("*", async (c) => {
   const existing = await filesystem.stat(key);
   if (existing?.kind === "directory")
     return c.text("Collection exists", 405, { Allow: ALLOW });
-  const object = await filesystem.write(key, c.req.raw.body ?? "", {
-    httpMetadata: c.req.raw.headers,
-    onlyIf: c.req.raw.headers,
-  });
+  const ifHeader = c.req.header("if");
+  if (ifHeader) {
+    const existingEtag = existing?.object?.httpEtag;
+    const matchesIfList = (list: string) =>
+      [...list.matchAll(/(Not\s+)?\[([^\]]+)\]/gi)].every(
+        ([, negated, value]) =>
+          negated ? value !== existingEtag : value === existingEtag,
+      );
+    const matchesIfHeader = (ifHeader.match(/\([^)]*\)/g) ?? []).some(
+      matchesIfList,
+    );
+    if (!matchesIfHeader) return c.body(null, 412);
+  }
+
+  let object: Entry;
+  try {
+    object = await filesystem.write(key, c.req.raw.body ?? "", {
+      httpMetadata: c.req.raw.headers,
+      onlyIf: c.req.raw.headers,
+    });
+  } catch (error) {
+    if (ifHeader && error instanceof FileSystemError && error.code === "locked")
+      return c.body(null, 412);
+    throw error;
+  }
   return c.body(null, existing ? 204 : 201, {
     ...(existing ? {} : { Location: c.req.url }),
     ETag: object.object!.httpEtag,

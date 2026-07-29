@@ -46,21 +46,28 @@ wait_for_server() {
 }
 
 run_litmus() {
-  local -a statuses
+  local output_file="$runtime_dir/litmus.log"
+  local status
+  local failure_count
 
   set +e
-  litmus -k "$base_url/" "$litmus_username" "$litmus_password" 2>&1 |
-    tee /dev/stderr |
-    grep -E 'of [0-9]+ tests run: [0-9]+ passed, [1-9][0-9]* failed\.' >/dev/null
-  statuses=("${PIPESTATUS[@]}")
+  litmus -k "$base_url/" "$litmus_username" "$litmus_password" >"$output_file" 2>&1
+  status=$?
   set -e
+  cat "$output_file"
 
-  if [[ "${statuses[0]}" -ne 0 ]]; then
-    return "${statuses[0]}"
+  failure_count="$(grep -Ec 'FAIL \(|OOPS unexpected test result' "$output_file" || true)"
+  if [[ "$failure_count" -eq 0 ]]; then
+    return "$status"
   fi
-  if [[ "${statuses[2]}" -eq 0 ]]; then
-    return 1
+
+  # Workers cannot send the HTTP 100 Continue interim response.
+  if [[ "$failure_count" -eq 1 ]] &&
+    grep -Eq 'expect100.*FAIL \(' "$output_file"; then
+    return 0
   fi
+
+  return 1
 }
 
 trap cleanup EXIT

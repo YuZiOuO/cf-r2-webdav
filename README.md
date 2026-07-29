@@ -19,12 +19,13 @@ bunx wrangler login
 # 创建 R2 bucket
 bunx wrangler r2 bucket create webdav # 注意:如果需要使用其他名称，请同时修改 wrangler.jsonc 中的绑定。
 
-# 交互式地设定 WebDAV 用户名与密码
-bunx wrangler secret put WEBDAV_USERNAME
-bunx wrangler secret put WEBDAV_PASSWORD
-
 # 部署
 bun run deploy # 命令会输出 Worker 的 HTTPS 地址。
+
+# 交互式地设定 WebDAV 用户名与密码
+# 执行后马上生效
+bunx wrangler secret put WEBDAV_USERNAME
+bunx wrangler secret put WEBDAV_PASSWORD
 ```
 
 本地开发时，变量从 `.dev.vars` 中读取：

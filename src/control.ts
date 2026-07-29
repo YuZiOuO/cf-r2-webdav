@@ -192,14 +192,15 @@ export class FileSystemState extends DurableObject {
               this.writeProperties(key, change.properties);
               return true;
             case "patch": {
-              let next = this.readProperties(key).filter(
-                (property) => !change.remove.includes(property.name),
+              const setByName = new Map(
+                change.set.map((property) => [property.name, property]),
               );
-              next = next.filter(
+              const next = this.readProperties(key).filter(
                 (property) =>
-                  !change.set.some((value) => value.name === property.name),
+                  !change.remove.includes(property.name) &&
+                  !setByName.has(property.name),
               );
-              this.writeProperties(key, next.concat(change.set));
+              this.writeProperties(key, next.concat([...setByName.values()]));
               return true;
             }
           }

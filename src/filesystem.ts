@@ -182,7 +182,9 @@ export class FileSystem {
     const existing = await this.findEntry(key);
     if (existing?.kind === "directory")
       throw new FileSystemError("already-exists", "Directory already exists");
-    await this.assertNoLockConflict(key);
+    const hasLock = await this.assertNoLockConflict(key);
+    if (this.access.tokens.length && !hasLock)
+      throw new FileSystemError("conflict", "Lock condition does not match");
     const object = await this.bucket.put(key, body, options);
     if (!object)
       throw new FileSystemError("conflict", "Conditional write failed");
@@ -297,14 +299,17 @@ export class FileSystem {
   private async assertNoLockConflict(key: string, checkTarget = true) {
     const resources = KeyPath.ancestorKeys(key);
     const start = checkTarget ? 0 : 1;
+    let hasLock = false;
     for (let index = start; index < resources.length; index++) {
       const ancestorKey = resources[index];
       const state = await this.env.FileSystemState.getByName(
         KeyPath.parent(ancestorKey) || "/",
       ).read([ancestorKey], this.access.tokens, index > 0);
+      hasLock ||= state[ancestorKey].locked;
       if (!state[ancestorKey].permitted)
         throw new FileSystemError("locked", "Resource is locked");
     }
+    return hasLock;
   }
 
   // WebDAV metadata and locks
@@ -364,26 +369,30 @@ export class FileSystem {
       const target = await this.findEntry(key);
       if (!target) await this.assertParentDirectoryExists(key);
     }
-    const stateStore = this.env.FileSystemState.getByName(
+    if (request.kind === "refresh") {
+      for (const candidateKey of KeyPath.ancestorKeys(key)) {
+        const lock = await this.env.FileSystemState.getByName(
+          KeyPath.parent(candidateKey) || "/",
+        ).mutate(candidateKey, {
+          kind: "lock",
+          operation: "refresh",
+          token: request.token,
+          expiresInSeconds: request.expiresInSeconds,
+        });
+        if (lock && typeof lock !== "boolean") return lock;
+      }
+      throw new FileSystemError("locked", "Unable to refresh lock");
+    }
+
+    const lock = await this.env.FileSystemState.getByName(
       KeyPath.parent(key) || "/",
-    );
-    const lock = await stateStore.mutate(
-      key,
-      request.kind === "create"
-        ? {
-            kind: "lock",
-            operation: "create",
-            scope: request.scope,
-            depth: request.depth,
-            expiresInSeconds: request.expiresInSeconds,
-          }
-        : {
-            kind: "lock",
-            operation: "refresh",
-            token: request.token,
-            expiresInSeconds: request.expiresInSeconds,
-          },
-    );
+    ).mutate(key, {
+      kind: "lock",
+      operation: "create",
+      scope: request.scope,
+      depth: request.depth,
+      expiresInSeconds: request.expiresInSeconds,
+    });
     if (!lock || typeof lock === "boolean")
       throw new FileSystemError("locked", "Unable to acquire lock");
     return lock;
@@ -449,7 +458,7 @@ export class FileSystem {
       destinationKey.startsWith(`${sourceKey}/`)
     )
       throw new FileSystemError("invalid-path", "Destination is inside source");
-    if (source.kind === "directory" && !recursive && moving) recursive = true;
+    const copyDirectoryContents = recursive || moving;
     await this.assertParentDirectoryExists(destinationKey);
 
     const existing = await this.findEntry(destinationKey);
@@ -465,11 +474,13 @@ export class FileSystem {
       await this.assertNoLockConflict(entryKey);
 
     const sourceSubtreeKeys =
-      source.kind === "directory" && recursive
+      source.kind === "directory" && copyDirectoryContents
         ? await this.collectEntryKeysInSubtree(sourceKey)
         : [sourceKey];
-    for (const entryKey of sourceSubtreeKeys)
-      await this.assertNoLockConflict(entryKey);
+    if (moving) {
+      for (const entryKey of sourceSubtreeKeys)
+        await this.assertNoLockConflict(entryKey);
+    }
 
     try {
       if (existing) {
@@ -481,7 +492,7 @@ export class FileSystem {
 
       if (source.kind === "file") {
         await copyR2Object(sourceKey, destinationKey);
-      } else if (recursive) {
+      } else if (copyDirectoryContents) {
         const sourceObjects = await this.listR2ObjectsWithPrefix(
           `${sourceKey}/`,
         );
