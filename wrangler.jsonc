@@ -12,15 +12,15 @@
   "durable_objects": {
     "bindings": [
       {
-        "name": "METADATA",
-        "class_name": "WebDavMetadata",
+        "name": "FileSystemState",
+        "class_name": "FileSystemState",
       },
     ],
   },
   "migrations": [
     {
       "tag": "v1",
-      "new_sqlite_classes": ["WebDavMetadata"],
+      "new_sqlite_classes": ["FileSystemState"],
     },
   ],
   "observability": {

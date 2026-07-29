@@ -5,23 +5,26 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy --minify",
     "cf-typegen": "wrangler types --env-interface CloudflareBindings",
-    "test": "vitest run",
+    "test": "bash script/litmus_test.sh",
+    "test:perf": "k6 run script/load_test.js",
     "format": "prettier --write .",
     "lint": "eslint .",
     "check": "prettier --check . && bun run lint && tsc --noEmit && bun run test"
   },
   "dependencies": {
+    "@xmldom/xmldom": "^0.9.10",
     "fast-xml-builder": "^1.3.0",
     "fast-xml-parser": "5.3.9",
+    "fresh": "^0.5.2",
     "hono": "^4.12.32"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "0.12.21",
     "@eslint/js": "^10.0.1",
+    "@types/fresh": "^0.5.3",
+    "@types/node": "^26.1.2",
     "eslint": "^10.8.0",
     "prettier": "^3.9.6",
     "typescript-eslint": "^8.65.0",
-    "vitest": "3.2.7",
     "wrangler": "^4.114.0"
   }
 }
