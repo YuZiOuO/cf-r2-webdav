@@ -1,5 +1,5 @@
 {
-  "name": "cf-r2-webdav",
+  "name": "cf-webdav",
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
