@@ -1,5 +1,6 @@
 import { basicAuth } from "hono/basic-auth";
 import { Hono } from "hono";
+import { html } from "hono/html";
 import { HTTPException } from "hono/http-exception";
 import XMLBuilder from "fast-xml-builder";
 import { XMLParser, XMLValidator } from "fast-xml-parser";
@@ -301,15 +302,54 @@ app.on("PROPPATCH", "*", async (c) => {
 app.get("*", async (c) => {
   const filesystem = c.get("filesystem");
   const key = c.get("key");
-  if (!key) return c.text("Collection", 405, { Allow: ALLOW });
-  const target = await filesystem.stat(key);
+  const target = key
+    ? await filesystem.stat(key)
+    : ({ key: "", kind: "directory" } satisfies Entry);
   if (!target) {
     if ((await filesystem.webdav.inspect([key]))[key]?.locked)
       return c.body(null, 204, { "Content-Length": "0" });
     return c.text("Not Found", 404);
   }
-  if (target.kind === "directory")
-    return c.text("Collection", 405, { Allow: ALLOW });
+  if (target.kind === "directory") {
+    const entries = await filesystem.list(target);
+    const parentKey = key.includes("/")
+      ? key.slice(0, key.lastIndexOf("/"))
+      : "";
+    const title = key ? `/${key}/` : "/";
+    const href = (entryKey: string, kind: Entry["kind"]) =>
+      `/${entryKey.split("/").map(encodeURIComponent).join("/")}${kind === "directory" ? "/" : ""}`;
+    const directoryRows = [
+      ...(key
+        ? [
+            html`<a href="${parentKey ? href(parentKey, "directory") : "/"}"
+                >../</a
+              ><br />`,
+          ]
+        : []),
+      ...entries.map((entry) => {
+        const name = entry.key.slice(entry.key.lastIndexOf("/") + 1);
+        return html`<a href="${href(entry.key, entry.kind)}"
+            >${name}${entry.kind === "directory" ? "/" : ""}</a
+          ><br />`;
+      }),
+    ];
+
+    return c.html(html`
+      <!doctype html>
+      <html lang="en">
+        <head>
+          <meta charset="utf-8" />
+          <title>Index of ${title}</title>
+        </head>
+        <body>
+          <h1>Index of ${title}</h1>
+          <hr />
+          <pre>${directoryRows}</pre>
+          <hr />
+        </body>
+      </html>
+    `);
+  }
   const metadata = target.object;
   if (!metadata) return c.text("Not Found", 404);
 
